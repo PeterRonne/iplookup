@@ -3,9 +3,12 @@ import json
 import sys
 from pathlib import Path
 import requests
+import collections
+import ipaddress
 
 APP_DIR = Path.home() / ".config" / "iplookup"
 CONFIG_PATH = APP_DIR / "config.json"
+BASE_URL = "https://api.ipinfo.io/lite/"
 
 def ensure_config_exists() -> None:
     if CONFIG_PATH.exists():
@@ -19,8 +22,9 @@ def ensure_config_exists() -> None:
     CONFIG_PATH.write_text(json.dumps(template, indent=4) + "\n", encoding="utf-8")
 
     print(f"Created config file at: {CONFIG_PATH}")
-    print("Set your token with:")
+    print("Set your IPinfo Lite token with:")
     print("  iplookup config set-token YOUR_TOKEN_HERE")
+    print("If you dont have one go to https://ipinfo.io to get it")
     raise SystemExit(1)
 
 
@@ -37,8 +41,14 @@ def save_config(cfg: dict) -> None:
     APP_DIR.mkdir(parents=True, exist_ok=True)
     CONFIG_PATH.write_text(json.dumps(cfg, indent=4) + "\n", encoding="utf-8")
 
+def check_ip(ip: str) -> bool:
+    try:
+        ipaddress.ip_address(ip)
+        return True
+    except ValueError:
+        return False
 
-def cmd_lookup(target: str, token_override: str | None) -> None:
+def cmd_lookup(target: str, file: str | None, token_override: str | None, count: bool) -> None:
     cfg = load_config()
 
     token = token_override or cfg.get("token", "")
@@ -48,18 +58,44 @@ def cmd_lookup(target: str, token_override: str | None) -> None:
         raise SystemExit(1)
 
     timeout = cfg.get("timeout", 10)
-    url = f"https://api.ipinfo.io/lite/{target}"
-
     headers = {"Authorization": f"Bearer {token}"}
-    r = requests.get(url, headers=headers, timeout=timeout)
-    r.raise_for_status()
 
-    data = r.json()
-    if isinstance(data, dict) and "error" in data:
-        print(f"API error: {data['error']}")
+    if file: 
+        country_names = []
+        country_codes = []
+        with open(file, encoding="utf-8") as f:
+            for line in f:
+                ip = line.strip()
+                if check_ip(ip):
+                    r = requests.get(f"{BASE_URL}{ip}", headers=headers, timeout=timeout)
+                    data = r.json()
+                    if isinstance(data, dict) and "error" in data:
+                        print(f"API error: {data['error']}")
+                        continue
+
+                    country_names.append(data['country'])
+                    country_codes.append(data['country_code'])
+        if not count:
+            unique_codes = sorted(set(country_codes))
+            print(json.dumps(unique_codes, indent=4))
+        else:
+            geo_data = collections.Counter(country_names)
+            for country, n in geo_data.most_common():
+                print(f"{country}: {n}")
+        return
+    
+    if target == "me" or check_ip(target):
+        r = requests.get(f"{BASE_URL}{target}", headers=headers, timeout=timeout)
+        r.raise_for_status()
+        data = r.json()
+        if isinstance(data, dict) and "error" in data:
+            print(f"API error: {data['error']}")
+            raise SystemExit(2)
+
+        print(json.dumps(data, indent=4))
+    else:
+        print("Target must be me or a valid IPv4/IPv6 address.")
         raise SystemExit(2)
-
-    print(json.dumps(data, indent=4))
 
 
 def cmd_config_set_token(token: str) -> None:
@@ -80,6 +116,8 @@ def main() -> None:
     lookup_parser = sub.add_parser("lookup", help="Lookup info for an IP (or 'me')")
     lookup_parser.add_argument("target", nargs="?", default="me", help="IP address or 'me'")
     lookup_parser.add_argument("--token", help="Override token (does not save)")
+    lookup_parser.add_argument("--file", help="Read Ips from a .txt file returns a unique set of country codes")
+    lookup_parser.add_argument("--count", action="store_true", help="With --file: print counts with country name instead of unique codes")
 
     cfg_parser = sub.add_parser("config", help="Manage config")
     cfg_sub = cfg_parser.add_subparsers(dest="cfg_command", required=True)
@@ -96,7 +134,7 @@ def main() -> None:
         if first not in ("lookup", "config", "-h", "--help"):
             sys.argv.insert(1, "lookup")
 
-    args = parser.parse_args()
+    args = parser.parse_args() 
 
     if args.command == "config":
         if args.cfg_command == "set-token":
@@ -104,9 +142,11 @@ def main() -> None:
         elif args.cfg_command == "path":
             cmd_config_path()
         return
+    
+    if args.count and not args.file:
+        parser.error("--count can only be used with --file")
 
-    cmd_lookup(args.target, args.token)
-
+    cmd_lookup(args.target, args.file, args.token, args.count)
 
 if __name__ == "__main__":
     main()
