@@ -48,7 +48,7 @@ def check_ip(ip: str) -> bool:
     except ValueError:
         return False
 
-def cmd_lookup(target: str, file: str | None, token_override: str | None, count: bool) -> None:
+def cmd_lookup(target: str, file: str | None, token_override: str | None, count: bool, alert_codes: list[str] | None) -> None:
     cfg = load_config()
 
     token = token_override or cfg.get("token", "")
@@ -63,6 +63,9 @@ def cmd_lookup(target: str, file: str | None, token_override: str | None, count:
     if file: 
         country_names = []
         country_codes = []
+        alert_codes = [c.upper() for c in (alert_codes or [])]
+        hits = {code: [] for code in alert_codes}
+
         with open(file, encoding="utf-8") as f:
             for line in f:
                 ip = line.strip()
@@ -74,14 +77,32 @@ def cmd_lookup(target: str, file: str | None, token_override: str | None, count:
                         continue
 
                     country_names.append(data['country'])
-                    country_codes.append(data['country_code'])
-        if not count:
+                    country_code = data['country_code']
+                    country_codes.append(country_code)
+
+                    if country_code in alert_codes:
+                        hits[country_code].append(ip)
+
+        if not count and not alert_codes:
             unique_codes = sorted(set(country_codes))
             print(json.dumps(unique_codes, indent=4))
-        else:
+        
+        elif count:
             geo_data = collections.Counter(country_names)
             for country, n in geo_data.most_common():
                 print(f"{country}: {n}")
+        
+        else:
+            for code in alert_codes:
+                ips = hits.get(code, [])
+                if not ips:
+                    continue
+                
+                print(f"{code} ({len(ips)})")
+                for ip in ips:
+                    print(f"  {ip}")
+
+                print()
         return
     
     if target == "me" or check_ip(target):
@@ -118,6 +139,7 @@ def main() -> None:
     lookup_parser.add_argument("--token", help="Override token (does not save)")
     lookup_parser.add_argument("--file", help="Read Ips from a .txt file returns a unique set of country codes")
     lookup_parser.add_argument("--count", action="store_true", help="With --file: print counts with country name instead of unique codes")
+    lookup_parser.add_argument("--alert", nargs="+", help="Print IPs grouped by country code for the given codes (e.g. --alert CN RU)")
 
     cfg_parser = sub.add_parser("config", help="Manage config")
     cfg_sub = cfg_parser.add_subparsers(dest="cfg_command", required=True)
@@ -145,8 +167,14 @@ def main() -> None:
     
     if args.count and not args.file:
         parser.error("--count can only be used with --file")
+    
+    if args.alert and args.count:
+        parser.error("--alert cannot be used together with --count")
 
-    cmd_lookup(args.target, args.file, args.token, args.count)
+    if args.alert and not args.file:
+        parser.error("--alert can only be used with --file")
+
+    cmd_lookup(args.target, args.file, args.token, args.count, args.alert)
 
 if __name__ == "__main__":
     main()
