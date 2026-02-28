@@ -65,10 +65,17 @@ def cmd_lookup(target: str, file: str | None, token_override: str | None, count:
         country_codes = []
         alert_codes = [c.upper() for c in (alert_codes or [])]
         hits = {code: [] for code in alert_codes}
+        seen = set()
 
         with open(file, encoding="utf-8") as f:
             for line in f:
                 ip = line.strip()
+
+                if ip in seen:
+                    continue
+                else:
+                    seen.add(ip)
+
                 if check_ip(ip):
                     r = requests.get(f"{BASE_URL}{ip}", headers=headers, timeout=timeout)
                     data = r.json()
